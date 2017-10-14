@@ -1,0 +1,104 @@
+[http]
+[200 OK]
+/var/www,
+/usr/local/apache,
+/usr/local/apache2,
+/usr/local/www/apache22,
+/usr/local/www/apache24,
+/usr/local/httpd,
+/var/www/nginxdefault,
+/srv/www,
+/var/www/vhosts/,
+/var/www/virtual/,
+/var/www/clients/vhosts/,
+/var/www/clients/virtual/,
+xampp,
+\\ProgramFiles\\xampp,
+\\wamp,
+\\ProgramFiles\\wampp,
+\\apache,
+\\ProgramFiles\\ApacheGroup
+\\Inetpub\\wwwroot,
+\\Inetpub\\wwwroot\\,
+\\Inetpub\\vhosts\\,
+D:\\phpStudy\\WWW,
+root:x:0:0:root:,
+daemon:x:1:1:daemon:,
+bin:x:2:2:bin:/bin:,
+sys:x:3:3:sys:,
+sync:x:4:65534:,
+iis apppool,
+Windows IP,
+Npcap Loopback Adapter:,
+255.255.255.0
+0.0.0.0
+administrator
+Guest
+Link encap:Local Loopback
+Link encap:Etherne
+root
+LISTENING
+ESTABLISHED
+ff-ff-ff-ff-ff-ff
+\[::\]:0
+<DIR>
+PHP Version
+System
+Server Root 
+HTTP_HOST
+HTTP_USER_AGENT
+WINDIR
+Microsoft JET Database Engine 错误 '80040e14'
+localhost
+information_
+information_schema
+mysql.user
+mysql.db
+mysql.host
+mysql.table_priv
+mysql.column_priv
+mysql.procs_priv
+password
+user
+username
+mysrv
+127.0.0.1
+bulkadmin
+dbcreator
+diskadmin
+processadmin
+public
+securityadmin
+serveradmin
+setupadmin
+sysadmin
+master
+model
+msdb
+tempdb
+RESOURCE
+CONNECT
+users
+[POP3]
+[normal]
+OK User successfully logged on
+OK 0 messages
+total messages
+
+[IMAP]
+[normal]
+OK LOGIN completed
+OK LOGIN Ok
+
+[SMTP]
+[normal]
+Authentication successful
+go ahead
+
+[FTP]
+[normal]
+User logged in,proceed
+
+[TCP]
+[normal]
+\[TCP window update\]
