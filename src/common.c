@@ -2,7 +2,7 @@
  * common.c
  *
  *  Created on: 2017-6-7
- *      Author: lzh
+ *      Author: Chad
  */
 
 #include "common.h"
@@ -10,41 +10,14 @@
 #include <string.h>
 #include "dbapi.h"
 
-void YieldCpu(int iInterval)
-{
-	TRACE();
-	//pthread_yield();
-	sleep(iInterval);
-}
-
-/**
- * Purpose: initialize log routine
- * Input: 	N/A
- * Output: N/A
- * Return: void
- * Author: hittlle
- * Date: 2017/06/07
- */
 void InitLog()
 {
 	TRACE();
 	openlog("digger", LOG_CONS | LOG_PID, 0);
 }
-/**
- * Purpose: write log message to log system
- * Input:
- * 			level: log level, possible values are LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING,LOG_NOTICE,
- * 						  LOG_INFO, LOG_DEBUG
- * 			format: formatting string, the same as that of printf and sprintf
- * 			other arguments that may be given by the caller
- * Output: new log entry to the log system
- * Return: void
- * Author: hittlle
- * Date: 2017/06/07
- */
+
 void LogMessage(int level, const char* format,...)
 {
-	//TRACE();
 	char buf[BUFLEN];
 	va_list va;
 	memset(buf, 0, BUFLEN);
@@ -58,50 +31,10 @@ void LogMessage(int level, const char* format,...)
 }
 
 /**
- * Purpose: create a UNIX domain socket
- * Input: 	UNIX domain socket file path
- * Output: socket descriptor
- * Return: socket descriptor on success, -1 on failure
- * Author: hittlle
- * Date: 2017/06/07
- */
-int CreateMessageSocket(const char* path)
-{
-	int fd = -1;
-	struct sockaddr_un addr;
-	bzero(&addr, sizeof(struct sockaddr_un));
-
-	if (NULL == path || strlen(path) == 0)
-	{
-		return -1;
-	}
-
-	//unlink path
-	unlink(path);
-
-	if ((fd = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0)
-	{
-		LogMessage(LOG_ERR, "CreateMessageSocket socket error: %s", strerror(errno));
-		return -1;
-	}
-	addr.sun_family = AF_UNIX;
-	strcpy(addr.sun_path, path);
-	if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-	{
-		LogMessage(LOG_ERR, "CreateMessageSocket bind error: %s", strerror(errno));
-		close(fd);
-		return -1;
-	}
-	return fd;
-}
-
-/**
  *	Purpose:	check whether a IP is local/protected IP or not
  *	Input:		struct in_addr
  *	Output:		void
  *	Return:		int
- *	Author:		hittlle
- *	Date:		2017/06/07
  */
 
 #ifndef MAX_PROTECTED_CONFIG

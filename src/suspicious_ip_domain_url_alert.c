@@ -199,6 +199,7 @@ static int whiteExtensionFilter(char *path)
     }
     return match;
 }
+
 /**
 *@Description: log suspicious flow to database.
 *@Paras: pkt
@@ -216,42 +217,23 @@ static int logSuspiciousFlowEvent(msg_t *pkt,int event_type,char *event_detail,c
     LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!pkt || !event_detail || !event_data || !suspicious_content)
         return -1;
-    static MYSQL *pConn = NULL;
-    if(pConn == NULL){
-        pConn = CreateDBConn();
-        if(pConn == NULL){
-            LogMessage(LOG_INFO,"%s:failed to create db connection,return\n",__FUNCTION__);
-            return -1;
-        }
-    }
-	else if (!IsDBConnActive(pConn))
-	{
-		CloseDBConn(pConn);
-		pConn = CreateDBConn();
-	}
     
-    if(pConn == NULL){
-        LogMessage(LOG_ERR,"%s:failed to create db connection,return\n",__FUNCTION__);
-        return -1;
-    }
-    uint32_t property_ip;
-    uint32_t dst_ip;
-    u_short property_port;
-    u_short dst_port;
-    char dst_ip_str[INET_ADDRSTRLEN] = {0};
+    static MYSQL *pConn = NULL;
+    uint32_t suspicious_host_ip = 0;
+    uint32_t dst_ip = 0;
+    u_short host_port = 0;
+    u_short dst_port = 0;
     if(pkt->src_is_protected){
-        property_ip = ntohl(pkt->src_ip);
-        property_port = ntohs(pkt->src_port);
+        suspicious_host_ip= ntohl(pkt->src_ip);
+        host_port = ntohs(pkt->src_port);
         dst_ip = ntohl(pkt->dst_ip);
         dst_port = ntohs(pkt->dst_port);
-        inet_ntop(AF_INET,&pkt->dst_ip,dst_ip_str,sizeof(dst_ip_str));
     }
     else if(pkt->dst_is_protected){
-        property_ip = ntohl(pkt->dst_ip);
-        property_port = ntohs(pkt->dst_port);
+        suspicious_host_ip = ntohl(pkt->dst_ip);
+        host_port = ntohs(pkt->dst_port);
         dst_ip = ntohl(pkt->src_ip);
         dst_port = ntohs(pkt->src_port);
-        inet_ntop(AF_INET,&pkt->src_ip,dst_ip_str,sizeof(dst_ip_str));
     }
     else{
         /*external suspicious flow?*/
@@ -262,18 +244,15 @@ static int logSuspiciousFlowEvent(msg_t *pkt,int event_type,char *event_detail,c
     if(whiteExtensionFilter(event_data))
         return 1;
     
-    size_t size = 0;
-    char country[16] = {0};
-    char city[16] = {0};
-    
-    int mal_ip = 0;
-    int mal_domain = 0;
-    int mal_url = 0;
+    size_t content_len = strlen(suspicious_content)+strlen(event_data)+strlen(event_detail);
+    int sql_len = content_len + 512;
+    char *sql = calloc(1,sql_len);
+    if(sql == NULL){
+        LogMessage(LOG_ERR,"%s:failed to alloc memeory:%s\n",__FUNCTION__,strerror(errno));
+        return -1;
+    }
     char *event_type_str;
-    int criteria = 4;
-    int suspicious_type = 0;
     char proto[16] = {0};
-    int crit_level = 4;
     switch(pkt->protocol){
         case PROTO_TCP:
             strcpy(proto,"tcp");
@@ -291,80 +270,45 @@ static int logSuspiciousFlowEvent(msg_t *pkt,int event_type,char *event_detail,c
     switch(event_type){
         case SUSPICIOUS_IP_EVENT_NUM:
             event_type_str = IP_EVENT_STR;
-            mal_ip = 1;
-            criteria = 6;
-            suspicious_type = 6;
-            crit_level = 1;/*critical*/
             break;
         case SUSPICIOUS_DOMAIN_EVENT_NUM:
             event_type_str = DOMAIN_EVENT_STR;
-            mal_domain = 1;
-            criteria = 5;
-            suspicious_type = 5;
             strcpy(proto,"dns");
-            crit_level = 1;/*critical*/
             break;
         case SUSPICIOUS_URL_EVENT_NUM:
             event_type_str = URL_EVENT_STR;
-            mal_url = 1;
-            criteria = 4;
-            suspicious_type= 4;
             strcpy(proto,"http");
             break;
         default:
             event_type_str = UNKNOWN_EVENT_STR;
             break;
     }
-    int ret = 0;
-    size_t content_len = strlen(suspicious_content)+strlen(event_data)+strlen(event_detail);
-    int sql_len = content_len + 512;
-    char *sql = calloc(1,sql_len);
-    if(sql == NULL){
-        LogMessage(LOG_ERR,"%s:failed to alloc memeory:%s\n",__FUNCTION__,strerror(errno));
-	    CloseDBConn(pConn);
+    /*TODO:handle ' in event_data and suspicious_content*/
+    snprintf(sql,sql_len,"insert into %s(property_ip,property_port,dst_ip,dst_port,protocol,\
+    event_type,event_type_str,event_detail,event_data,suspicious_content,timestamp,date_num,month) \
+        values(%u,%u,%u,%u,'%s',\
+        %d,'%s','%s','%s','%s',now(),date_format(now(),'%%Y%%m%%d'),date_format(now(),'%%Y%%m'))",
+        SUSPICIOUS_FLOW_TABLE,suspicious_host_ip,host_port,dst_ip,dst_port,proto,
+        event_type,event_type_str,event_detail,event_data,suspicious_content);
+    
+    if(pConn == NULL){
+        pConn = CreateDBConn();
+        if(pConn == NULL){
+            LogMessage(LOG_ERR,"%s:failed to create db connection,return\n",__FUNCTION__);
+            return -1;
+        }
+    }
+	else if (!IsDBConnActive(pConn))
+	{
+		CloseDBConn(pConn);
+		pConn = CreateDBConn();
+	}
+    
+    if(pConn == NULL){
+        LogMessage(LOG_ERR,"%s:failed to create db connection,return\n",__FUNCTION__);
         return -1;
     }
-    /*TODO:handle ' in event_data and suspicious_content*/
-    snprintf(sql,sql_len,"insert into %s(property_ip,property_port,dst_ip,dst_port,dst_country,dst_city,protocol,\
-    event_type,mal_ip,mal_domain,mal_url,event_type_str,event_detail,event_data,suspicious_content,timestamp,date_num,month) \
-        values(%u,%u,%u,%u,'%s','%s','%s',%d,%d,%d,%d,'%s','%s','%s','%s',now(),date_format(now(),'%%Y%%m%%d'),date_format(now(),'%%Y%%m00'))",
-        SUSPICIOUS_FLOW_TABLE,property_ip,property_port,dst_ip,dst_port,country,city,proto,event_type,mal_ip,mal_domain,mal_url,event_type_str,event_detail,event_data,suspicious_content);
-    int group = alertsGroup(property_ip,dst_ip,dst_port,suspicious_type,event_data);
-    ExecuteSql(pConn,(char *)"start transaction");
-    ret = ExecuteSql(pConn,sql);
-    if(ret != 0){
-        LogMessage(LOG_ERR,"%s:SQL(%s) failed\n",__FUNCTION__,sql);
-    }
-    time_t now = time(NULL);
-    if(group)/*update*/
-        snprintf(sql,sql_len,"update alerts set tv_last = unix_timestamp(),merge_cnt += 1 where property_ip = %u \
-        and remote_ips = inet_ntoa(%u) and remote_port = %u and suspicious_type = %d and event_data = '%s'",property_ip,dst_ip,dst_port,suspicious_type,event_data);
-    else
-        snprintf(sql,sql_len,"insert into alerts(tv_first,tv_last,timestamp,month,property_ip,property_port,remote_ips,\
-        remote_port,protocol,malicious_link,suspicious_type,criteria,algorithm,result,details,crit_level) \
-        values(%ld,%ld,now(),month(now()),%u,%u,inet_ntoa(%u),\
-        %u,'%s','%s',%d,%d,%d,'%s','%s',%d)",now,now,property_ip,property_port,dst_ip,
-        dst_port,proto,event_data,suspicious_type,criteria,algorithm,"疑似恶意软件",suspicious_content,crit_level);
-    ret += ExecuteSql(pConn,sql);
-    if(ret != 0){
-        LogMessage(LOG_ERR,"%s:SQL(%s) failed\n",__FUNCTION__,sql);
-    }
-    if(group)/*update*/
-        snprintf(sql,sql_len,"update alerts_hot set tv_last = unix_timestamp(),merge_cnt += 1 where property_ip = %u \
-        and remote_ips = inet_ntoa(%u) and remote_port = %u and suspicious_type = %d and event_data = '%s'",property_ip,dst_ip,dst_port,suspicious_type,event_data);
-    else
-        snprintf(sql,sql_len,"insert into alerts_hot(tv_first,tv_last,timestamp,month,property_ip,property_port,remote_ips,\
-        remote_port,protocol,malicious_link,suspicious_type,criteria,algorithm,result,details,crit_level) \
-        values(%ld,%ld,now(),month(now()),%u,%u,inet_ntoa(%u),\
-        %u,'%s','%s',%d,%d,%d,'%s','%s',%d)",now,now,property_ip,property_port,dst_ip,
-        dst_port,proto,event_data,suspicious_type,criteria,algorithm,"疑似恶意软件",suspicious_content,crit_level);
-    ret += ExecuteSql(pConn,sql);
-    if(ret){
-        ExecuteSql(pConn,(char *)"rollback");
-    }
-    else{
-        ExecuteSql(pConn,(char *)"commit");
-    }
+    int ret = ExecuteSql(pConn,sql);
     free(sql);
     return ret;
 }
@@ -1366,8 +1310,8 @@ static int validateDomainFormat(const char *domain)
     
     while(*p != '\0'){
         if(!((*p >= 48 && *p <= 57) /*digit*/
-            || (*p >= 65 && *p <= 90) /*big letters*/
-            || (*p >= 97 && *p <= 122) /*litter letters*/
+            || (*p >= 65 && *p <= 90) /*upper case*/
+            || (*p >= 97 && *p <= 122) /*lower case*/
             || *p == '-' 
             || *p == '.'))return 1;
         p++;
@@ -1387,7 +1331,6 @@ static int validateDomainFormat(const char *domain)
 */
 int checkDomain(const char *domain)
 {
-    //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,domain);
     int ret = validateDomainFormat(domain);
     if(ret != 0)
         return 0;
@@ -1463,16 +1406,15 @@ int isUrlInWhitelist(const char *url)
 
 static inline void logEvent(int event_type)
 {
-    return;
     switch(event_type){
         case IP_EVENT:
-            LogMessage(LOG_DEBUG,"*********got suspicious ip**********\n");
+            LogMessage(LOG_NOTICE,"*********got suspicious ip**********\n");
             break;
         case DOMAIN_EVENT:
-            LogMessage(LOG_DEBUG,"*********got suspicious domain**********\n");
+            LogMessage(LOG_NOTICE,"*********got suspicious domain**********\n");
             break;
         case URL_EVENT:
-            LogMessage(LOG_DEBUG,"*********got suspicious url**********\n");
+            LogMessage(LOG_NOTICE,"*********got suspicious url**********\n");
             break;
         default:
             break;
@@ -1484,7 +1426,6 @@ static void strncpySafe(char *dst,const char *src,size_t n,size_t dst_size)
     if(dst == NULL || src == NULL || n == 0){
         return;
     }
-    
     
     if(n<dst_size){
         memset(dst,0,n+1);
@@ -1595,7 +1536,6 @@ return 0:not in whitelist
 */
 static int checkDomainListed(const char *domain,int domain_type)
 {
-    //LogMessage(LOG_DEBUG,"%s(%s)%d\n",__FUNCTION__,domain,domain_type);
     if(domain == NULL || strlen(domain) == 0)
         return 1;
     
@@ -1611,7 +1551,6 @@ static int checkDomainListed(const char *domain,int domain_type)
     char *dot = strchr(domain,'.');
     while(dot){
         dot++;
-        //LogMessage(LOG_INFO,"domain segment is %s\n",dot);
         if(domain_type == WHITELIST){
             if(isDomainInWhitelist(dot)){
                 return 1;
@@ -1633,12 +1572,10 @@ return 0:not in whitelist
 */
 static int checkDomainBlacklisted(const char *domain)
 {
-    //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,domain);
     if(domain == NULL || strlen(domain) == 0)
         return 1;
     char tmp_domain[MAX_DOMAIN_LEN] = {0};
     strncpySafe(tmp_domain,domain,strlen(domain),MAX_DOMAIN_LEN);
-    //str2Lower(tmp_domain);
     if(isDomainInBlacklist(tmp_domain))
         return 1;
     
@@ -1656,7 +1593,6 @@ static int checkDomainBlacklisted(const char *domain)
 
 static int checkTitle(const char *http_response)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     static char *suspicous_title[] = {
         "this domain",
         "has been seized",
@@ -1668,7 +1604,6 @@ static int checkTitle(const char *http_response)
     if(title != NULL){
         int i = 0;
         title = strStrip(title);
-        //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,title);
         while(suspicous_title[i] != NULL){
             if(strcasecmp(suspicous_title[i],title) == 0){
                 logEvent(URL_EVENT);
@@ -1687,7 +1622,6 @@ return 0:ok
 */
 static int checkContentType(const char *http_response)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     static char *suspicous_content_type[] = {
         "application/x-sh",
         "application/x-shellscript",
@@ -1700,9 +1634,7 @@ static int checkContentType(const char *http_response)
     char *content_type = getSubstring(http_response,"\r\nContent-Type:","\r\n");
     if(content_type != NULL){
         int i = 0;
-        //content_type = str2Lower(content_type);
         content_type = strStrip(content_type);
-        //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,content_type);
         while(suspicous_content_type[i] != NULL){
             if(strcasecmp(suspicous_content_type[i],content_type) == 0){
                 logEvent(URL_EVENT);
@@ -1721,7 +1653,6 @@ static int checkContentType(const char *http_response)
 */
 static int checkRequestHost(char *host,uint32_t dst_ip)
 {
-    //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,host);
     uint32_t host_ip = 0;
     if(strlen(host) > 3 && strcmp(host + strlen(host) - 3,":80") == 0){
         host[strlen(host)-3] = 0;
@@ -1777,7 +1708,6 @@ static char *getHostFromPath(const char *path)
 
 static int checkRequestPath(http_header_info *pheader)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     /*http path might have domain or ip,suspicious,check it*/
     char *host_in_path = getSubstring(pheader->request.path,"://","/");
     if(host_in_path){
@@ -1795,7 +1725,6 @@ static int checkRequestPath(http_header_info *pheader)
 
 static int checkRequestPathWithMethod(http_header_info *phttp_header)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     char path[MAX_DOMAIN_LEN] = {0};
     strncpySafe(path,phttp_header->request.path,strlen(phttp_header->request.path),sizeof(path));
     char *pSingleSlash = strchr(path,'/');
@@ -1837,7 +1766,6 @@ static int gotStrMatch(const char *str,char **match)
 }
 static int checkHttpUserAgent(char *agent)
 {
-    //LogMessage(LOG_DEBUG,"%s(%s)\n",__FUNCTION__,agent);
     if(agent == NULL)
         return 0;
     
@@ -1874,7 +1802,6 @@ return 0:response is ok
 */
 static int checkHttpResponse(const char *http_response)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!http_response || strlen(http_response) == 0)
         return 0;
     
@@ -1948,7 +1875,6 @@ return 0:no,
 */
 static int httpRequestWhitelisted(const char *request_path)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!request_path || strlen(request_path) == 0)
         return 0;
     
@@ -1972,7 +1898,6 @@ static int httpRequestWhitelisted(const char *request_path)
 
 static int httpRequestSuspiciousStr(const char *request_path)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!request_path || strlen(request_path) == 0)
         return 0;
     
@@ -1992,7 +1917,6 @@ static int httpRequestSuspiciousStr(const char *request_path)
 
 static int checkExtension(const char *extension)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!extension || strlen(extension) == 0)
         return 0;
     
@@ -2030,7 +1954,6 @@ static int checkDirectDownloadKeywords(const char *path)
 static int suspicousHttpPathRegexCheck(const char *http_path)
 {
     #ifdef SUPPORT_REGEX_CHECK
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     static char *suspicious_http_path_regex[] = {
         "defaultwebpage\\.cgi",
         "inexistent_file_name\\.inexistent|test-for-some-inexistent-file|long_inexistent_path|some-inexistent-website\\.acu",
@@ -2061,7 +1984,6 @@ static int suspicousHttpPathRegexCheck(const char *http_path)
 static int suspicousHttpRequestRegexCheck(const char *http_request)
 {
     #ifdef SUPPORT_REGEX_CHECK
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     static char *suspicious_http_request_regex[] = {
         "information_schema|sysdatabases|sysusers|floor\\(rand\\(|ORDER BY \\d+|\\bUNION\\s+(ALL\\s+)?SELECT\\b|\\b(UPDATEXML|EXTRACTVALUE)\\(|\\bCASE[^\\w]+WHEN.*THEN\\b|\\bWAITFOR[^\\w]+DELAY\\b|\bCONVERT\\(|VARCHAR\\(|\\bCOUNT\\(\\*\\)|\\b(pg_)?sleep\\(|\\bSELECT\\b.*\bFROM\\b.*\\b(WHERE|GROUP|ORDER)\\b|\\bSELECT \\w+ FROM \\w+|\\b(AND|OR|SELECT)\\b.*/\\*.*\\*/|/\\*.*\\*/.*\\b(AND|OR|SELECT)\\b|\\b(AND|OR)[^\\w]+\\d+['\\\") ]?[=><]['\\\"( ]?\\d+|ODBC;DRIVER|\\bINTO\\s+(OUT|DUMP)FILE",
         "/text\\(\\)='",
@@ -2102,7 +2024,6 @@ static int suspicousHttpRequestRegexCheck(const char *http_request)
 static int suspicousUserAgentRegexCheck(char *ua)
 {
     #ifdef SUPPORT_REGEX_CHECK
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     if(!ua || !puser_agent_regex)
         return 0;
     
@@ -2157,7 +2078,6 @@ static int checkUrl(const char *host,char *url)
     if(!host || !url)
         return 0;
     
-    //LogMessage(LOG_DEBUG,"%s(%s%s),check url and then check host+url\n",__FUNCTION__,host,url);
     char url_with_host[MAX_URL_LEN+MAX_HOST_LEN] = {0};
     if(url[strlen(url)-1] == '/')
         url[strlen(url)-1] = 0;
@@ -2214,7 +2134,6 @@ return 0:ok, positive:suspicious
 */
 static int checkHttpRequest(http_header_info *pheader)
 {
-    //LogMessage(LOG_DEBUG,"%s\n",__FUNCTION__);
     /*handle http request*/
     /*step 1:get host and check it*/
     int ret = 0;
@@ -2563,7 +2482,6 @@ static int DomainChecker(msg_t *pkt)
     if(pkt->src_port != 53 && pkt->dst_port != 53){/*not dns packet*/
         return 0;
     }
-    //LogMessage(LOG_DEBUG,"check dns packet...\n");
     /*handle dns*/
     //printf("***********************************handle dns packet*******************************************\n");
     dns_header *dns_hdr = (dns_header *)pkt->url;
@@ -3190,25 +3108,17 @@ static void printGloableInfo()
     if(ret) printf("nonzero:match\n");else printf("zero:not match\n");\
 }while(0);
 
-void sendPacket()
+void testEngine()
 {
     msg_t msg;
-    //msg.src_ip = 3232236143;/*localhost byte order*/
-    //msg.dst_ip = 2332180790;
     char ssip[] = "192.168.2.111";
     char ddip[] = "139.2.65.54";
     struct in_addr s;
     struct in_addr d;
-    struct in_addr ss;
-    struct in_addr dd;
     inet_pton(AF_INET, ssip, (void *)&s);
     inet_pton(AF_INET, ddip, (void *)&d);
-    //msg.src_ip = 1862445248; /*network byte order 192.168.2.111*/
-    //msg.dst_ip = 910230155; /*139.2.65.54*/
     msg.src_ip = s.s_addr; /*network byte order 192.168.2.111*/
     msg.dst_ip = d.s_addr; /*139.2.65.54*/
-    ss = s;
-    dd = d;
     msg.protocol = PROTO_TCP;
     msg.dst_port = 80;
     msg.src_port = 80;
@@ -3228,138 +3138,7 @@ Cookie: Hm_lvt_8e2a116daf0104a78d601f40a45c75b4=1497248477; Hm_lpvt_8e2a116daf01
     //strcpy(msg.url,"get php?id=/windows/systeeem.ini HTTP/1.1\r\n""Host: best-protectforyou.net\r\n\r\n");
 
     msg.url_size = strlen(msg.url);
-    int ll = msg.url_size;
-    int t = 0;
-    int a = 0;
-    int b = 0;
-    int c = 0;
-    int e = 0;
-    time_t now = time(NULL);
-    int max = 10000002;
-    int half_max = max/2;
-    //int max = 10;
-    struct timeval tv;
-    struct timeval tv1;
-    gettimeofday(&tv,NULL);
-	struct in_addr src;
-	struct in_addr dst;
-    char srcIP[16] = {0};
-    char dstIP[16] = {0};
-    printf("==============begin check:%ld====,url size is %d\n",now,msg.url_size);
-    if (NULL == inet_ntop(AF_INET, &msg.dst_ip, srcIP, INET_ADDRSTRLEN)) {
-        printf("error============\n");
-    }
-    else{
-        printf("dst ip is %s:%u\n",srcIP,msg.dst_ip);
-    }
-    
-    int p1 = 192;
-    int p2 = 168;
-    int p3 = 2;
-    int p4 = 1;
-    int dp1 = 139;
-    int dp2 = 2;
-    int dp3 = 65;
-    int dp4 = 54;
-    int repeat = 0;
-    int change_ip = 1;
-    addWhiteIpDynamicly(msg.dst_ip,"test.com");
-    while(t<max){
-        if(t%2 == 0){
-            //printf("==============0=========\n");
-            msg.dst_port = 80;
-            msg.src_port = 80;
-            msg.url_size = 0;
-        }
-        else{
-            msg.url_size= ll;
-            msg.dst_port++;
-            msg.src_port++;
-        }
-        b++;
-        e++;
-        if(repeat == 0 && t > half_max){
-            p1 = 192;
-            p2 = 168;
-            p3 = 2;
-            p4 = 1;
-            dp1 = 139;
-            dp2 = 2;
-            dp3 = 65;
-            dp4 = 54;
-            repeat = 1;
-        }
-        if(b>10000 && change_ip){
-            //msg.src_ip = htonl(ntohl(msg.src_ip)+1); /*network byte order 192.168.2.111*/
-            if(dp2 >= 254){
-                dp1++;
-                dp3 = 65;
-                dp4 = 54;
-            }
-            if(dp4>=254){
-                dp4 = 54;
-                dp2++;
-            }
-            sprintf(ddip,"%d.%d.%d.%d",dp1,dp2,dp3,dp4++);
-            inet_pton(AF_INET, ddip, (void *)&d);
-            msg.dst_ip = d.s_addr; 
-            //printf("destination ip:%s====\n",ddip);
-            #if 0
-	        if (NULL == inet_ntop(AF_INET, &msg.dst_ip, dstIP, INET_ADDRSTRLEN)) {
-                printf("error============\n");
-            }
-            else{
-                printf("dst ip is %s\n",dstIP);
-            }
-            #endif
-            //printf("dst ip :%s\n",ddip);
-            b = 0;
-            c++;
-        }
-        if(e>10000 && change_ip){
-            if(p3 >= 254){
-                p2++;
-                p3 = 2;
-                p4 = 1;
-            }
-            if(p4>=254){
-                p4 = 1;
-                p3++;
-            }
-            sprintf(ssip,"%d.%d.%d.%d",p1,p2,p3,p4++);
-            inet_pton(AF_INET, ssip, (void *)&s);
-            msg.src_ip = s.s_addr;
-            //printf("source ip:%s====\n",ssip);
-            e = 0;
-        }
-        if(a>100000){
-            a = 0;
-            addWhiteIpDynamicly(msg.dst_ip,"test.com");
-            printf("ta is %d\n",t);
-        }
-        portFlowStatistics(&msg);
-        suspiciousFlowChecker(&msg);
-    	src.s_addr = msg.src_ip;
-    	dst.s_addr = msg.dst_ip;
-        //AttackSuccessCheck(&msg);
-        t++;
-        a++;
-        //if(a>10)
-          //  break;
-    }
-      
-    now = time(NULL);
-    gettimeofday(&tv1,NULL);
-    float diff = 0;
-    if(tv1.tv_usec > tv.tv_usec)
-        diff = (tv1.tv_sec-tv.tv_sec)*1000,(tv1.tv_usec-tv.tv_usec)/1000;
-    else
-        diff = (tv1.tv_sec-tv.tv_sec-1)*1000,(labs(tv1.tv_usec-tv.tv_usec))/1000;
-    printf("==============end check:%ld====%f sec\n",now,diff/1000);
-    if(diff >= 1000)
-        printf("handle pps:%f,ip changed times:%d\n",max/(diff/1000),c);
-    else
-        printf("diff:%f,ip changed times:%d\n",diff,c);
+    suspiciousFlowChecker(&msg);
     
 }
 int main(int argc,char *argv[])
@@ -3380,18 +3159,6 @@ int main(int argc,char *argv[])
 
     #ifdef __TEST__
     LogMessage(LOG_INFO,"\n...init done,test search...\n");
-	pthread_t port_bps_update;
-    if (pthread_create(&port_bps_update, NULL, updatePortBps, NULL) < 0)
-    {
-    	LogMessage(LOG_ERR, "Failed to create port bps update thread: %s", strerror(errno));
-    	exit(-1);
-    }
-    
-    if (!InitMaxmindDB())
-    {
-    	LogMessage(LOG_ERR, "InitMaxmindDB error.Quitting...");
-    	exit(-1);
-    }
     
     uint32_t ipaddr;
     //inet_pton(AF_INET,"219.255.13.77",&ipaddr);
@@ -3466,7 +3233,7 @@ int main(int argc,char *argv[])
     TEST_RET(ret);
     
     printf("*************checker begin...\n");
-    sendPacket();
+    testEngine();
     #endif
     
     sceClean();
